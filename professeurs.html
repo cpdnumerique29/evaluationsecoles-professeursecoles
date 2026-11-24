@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Export PDF – Évaluations d'écoles (professeurs des écoles)</title>
+<style>
+  :root { --bleu:#000091; --bleu-clair:#e8edff; --gris:#666; --rouge:#ce0500; --vert:#18753c; }
+  * { box-sizing:border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size:14px; color:#161616; margin:0; padding:16px; background:#fff; }
+  h1 { font-size:16px; margin:0 0 4px; color:var(--bleu); }
+  p.sub { margin:0 0 14px; color:var(--gris); white-space:pre-line; }
+  button { background:var(--bleu); color:#fff; border:0; border-radius:4px; padding:10px 18px; font-size:15px; cursor:pointer; }
+  button:disabled { background:#ccc; cursor:not-allowed; }
+  button:hover:not(:disabled) { background:#1212ff; }
+  #status { margin:12px 0; padding:10px 12px; border-radius:4px; background:var(--bleu-clair); }
+  #status.ok { background:#b8fec9; color:#0d4a23; }
+  #status.err { background:#ffe9e9; color:var(--rouge); }
+  #status.warn { background:#fff4d6; color:#7a4d00; }
+  #dl { display:none; margin:8px 0; }
+  details { margin-top:14px; }
+  summary { cursor:pointer; color:var(--bleu); }
+  table { border-collapse:collapse; width:100%; margin-top:8px; font-size:12px; }
+  th, td { border:1px solid #ddd; padding:4px 6px; text-align:left; vertical-align:top; }
+  th { background:#f6f6f6; }
+  td.ko { color:var(--rouge); font-weight:bold; }
+  td.ok { color:var(--vert); }
+  code { background:#f2f2f2; padding:1px 4px; border-radius:3px; }
+</style>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+</head>
+<body>
+
+<h1>Export PDF – Évaluations d'écoles · Professeurs des écoles</h1>
+<p class="sub">Génère un seul PDF de synthèse : une page PDF par page Grist, avec un camembert par question.</p>
+<p class="sub" style="font-size:11px;margin-top:-8px">Version du widget : 24/11/2026 - 14h00 (professeurs des écoles)</p>
+
+<button id="btn" disabled>Télécharger le PDF</button>
+<div id="status">Chargement…</div>
+<p id="schoolInfo" class="sub"></p>
+<div id="dl"><a id="dlLink" target="_blank" rel="noopener">Le téléchargement n'a pas démarré ? Cliquez ici pour ouvrir le PDF.</a></div>
+
+<details id="diag">
+  <summary>Diagnostic : questions retrouvées dans la table</summary>
+  <div id="diagBody"></div>
+</details>
+
+<!-- ===================================================================
+     CŒUR : configuration + calculs + dessin du PDF (sans dépendance au DOM)
+     =================================================================== -->
+<script id="core">
+/* ------------------------------------------------------------------
+   CONFIGURATION — à adapter si besoin
+   Chaque question est retrouvée dans la table par :
+     { n:'1.1' }                numéro au début du libellé de la colonne (« 1.1. Notre enfant est »)
+     { has:'periscolaire' }     mot(s) contenus dans le libellé (sans accents, en minuscules)
+     { col:'MonIdColonne' }     identifiant exact de la colonne (si les deux autres échouent)
+     { type:'count', title:'…' } carte « nombre de réponses »
+   ------------------------------------------------------------------ */
+const CONFIG = {
+  documentTitle: "ÉVALUATIONS D'ÉCOLES 2026-2027",
+  footerLabel: 'Auto-évaluation école - Professeurs des écoles',
+  fileName: 'evaluations-ecoles-2026-2027-professeurs-des-ecoles.pdf',
+  blankLabel: 'Sans réponse',
+  subtitle: "auto évaluation - Professeurs des écoles",
+  coverFooter: '© PÔLE NUMÉRIQUE \u2022 DSDEN DU FINISTÈRE - NOVEMBRE 2026',   // pied de la page de couverture
+  // Table « INFORMATIONS SUR L'ÉCOLE » : identifiant de table (laisser vide = détection automatique)
+  // et identifiants de colonnes ($NOM_DE_L_ECOLE, $CODE_POSTAL, …). On lit la première ligne.
+  school: {
+    table: '',
+    fields: { nom: 'NOM_DE_L_ECOLE', cp: 'CODE_POSTAL', commune: 'COMMUNE', uai: 'UAI', circo: 'CIRCONSCRIPTION' }
+  },
+  pages: [
+    { name: "ÉTAT DE LA RÉPONSE",
+      items: [{ type: 'count', title: "Nombre d'enregistrements" }, { has: 'etat de la reponse' }] },
+    { name: "1a. VOTRE REGARD SUR LE FONCTIONNEMENT DE L'ECOLE",
+      items: [{ n: '1.1.1' }, { n: '1.1.2' }, { n: '1.1.3' }, { n: '1.1.4' }] },
+    { name: "1b. VOTRE REGARD SUR LE FONCTIONNEMENT DE L'ECOLE",
+      items: [{ n: '1.1.5' }, { n: '1.1.6' }, { n: '1.1.7' }, { n: '1.1.8' }] },
+    { name: "1c. VOTRE REGARD SUR LE FONCTIONNEMENT DE L'ECOLE",
+      items: [{ n: '1.1.9' }, { n: '1.1.10' }, { n: '1.1.11' }, { n: '1.1.12' }] },
+    { name: "1d. VOTRE REGARD SUR LE FONCTIONNEMENT DE L'ECOLE",
+      items: [{ n: '1.2.1' }, { n: '1.2.2' }] },
+    { name: "1e. VOTRE REGARD SUR LE FONCTIONNEMENT DE L'ECOLE",
+      items: [{ n: '1.3.1' }] },
+    { name: "2a. VOTRE REGARD SUR L’ÉCOLE DANS SON TERRITOIRE",
+      items: [{ n: '2.1.1' }, { n: '2.1.2' }, { n: '2.1.3' }, { n: '2.1.4' }] },
+    { name: "2b. VOTRE REGARD SUR L’ÉCOLE DANS SON TERRITOIRE",
+      items: [{ n: '2.1.5' }] },
+    { name: "2c. VOTRE REGARD SUR L’ÉCOLE DANS SON TERRITOIRE",
+      items: [{ n: '2.2.1' }, { n: '2.2.2' }, { n: '2.2.3' }, { n: '2.2.4' }] },
+    { name: "2d. VOTRE REGARD SUR L’ÉCOLE DANS SON TERRITOIRE",
+      items: [{ n: '2.2.5' }] },
+    { name: "3a. VOTRE REGARD SUR VOTRE PRATIQUE",
+      items: [{ n: '3.1.1' }, { n: '3.1.2' }, { n: '3.1.3' }, { n: '3.1.4' }] },
+    { name: "3b. VOTRE REGARD SUR VOTRE PRATIQUE",
+      items: [{ n: '3.1.5' }, { n: '3.1.6' }, { n: '3.1.7' }, { n: '3.1.8' }] },
+    { name: "3c. VOTRE REGARD SUR VOTRE PRATIQUE",
+      items: [{ n: '3.1.9' }, { n: '3.1.10' }, { n: '3.1.11' }, { n: '3.1.12' }] },
+    { name: "4. VOUS, A L'ECOLE",
+      items: [{ n: '4.1.1' }, { n: '4.1.2' }, { n: '4.1.3' }, { n: '4.1.4' }] }
+  ]
+};
+
+// Trois éléments (les éléments vides sont ignorés) :
+//   l1 = « École (UAI) »   l2 = « CP Commune »   l3 = « Circonscription »
+function schoolParts(info) {
+  if (!info) return null;
+  const s = x => (x == null ? '' : String(x).trim());
+  let cp = s(info.cp);
+  if (/^\d{4}$/.test(cp)) cp = '0' + cp;                 // code postal stocké en nombre : zéro initial perdu
+  const l1 = [s(info.nom), s(info.uai) ? '(' + s(info.uai) + ')' : ''].filter(Boolean).join(' ');
+  const l2 = [cp, s(info.commune)].filter(Boolean).join(' ');
+  const l3 = s(info.circo);
+  return (l1 || l2 || l3) ? { l1, l2, l3 } : null;
+}
+// En-tête des pages : « École (UAI) • CP Commune » puis « Circonscription »
+function schoolHeaderLines(p) {
+  if (!p) return [];
+  return [[p.l1, p.l2].filter(Boolean).join(' • '), p.l3].filter(Boolean);
+}
+
+const PALETTE = ['#1a6fa3', '#ff8a5b', '#1e8a66', '#d83a3a', '#7f58c0', '#8a4b40', '#e377c2', '#8c8c3c'];
+const BLANK_COLOR = '#b9bcc4';
+
+/* ---------------------------- utilitaires --------------------------- */
+// minuscules, sans accents, ponctuation → espaces
+const norm = s => String(s == null ? '' : s)
+  .normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+// jsPDF (polices standard) ne gère que le Latin-1 : on remplace le reste
+const pdfSafe = s => String(s == null ? '' : s)
+  .replace(/[‘’ʼ]/g, "'").replace(/[“”«»]/g, '"')
+  .replace(/[–—]/g, '-').replace(/…/g, '...')
+  .replace(/œ/g, 'oe').replace(/Œ/g, 'OE')
+  .replace(/[   ]/g, ' ')
+  .replace(/[^\x20-\x7e¡-ÿ•]/g, '?');   // • = puce « • » (présente dans WinAnsi)
+
+const fmtPct = p => String(Number(p.toPrecision(3))).replace('.', ',') + ' %';
+const hexToRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+
+function describeSpec(it) {
+  return it.col ? 'colonne ' + it.col : [it.n ? 'n° ' + it.n : '', it.has ? '« ' + it.has + ' »' : ''].filter(Boolean).join(' + ');
+}
+
+/* --------------------- appariement question ↔ colonne --------------------- */
+function specMatches(col, it) {
+  const keys = [norm(col.label), norm(col.id)];
+  return keys.some(key => {
+    if (it.n) {
+      // « 1 1 10 echanger… » ou « a1 1 10 echanger… » (identifiant Grist A1_1_10_Echanger…)
+      if (!new RegExp('^(?:[a-z])?' + it.n.split('.').join(' ') + '(?: |$)').test(key)) return false;
+    }
+    if (it.has && !key.includes(norm(it.has))) return false;
+    return true;
+  });
+}
+
+function findColumn(columns, it, used) {
+  if (it.col) return columns.find(c => c.id === it.col || norm(c.id) === norm(it.col)) || null;
+  return columns.find(c => !used.has(c.id) && specMatches(c, it)) || null;
+}
+
+/* ------------------------------ comptages ------------------------------ */
+function tally(col, blankLabel, colorOf) {
+  const counts = new Map();
+  let blank = 0;
+  for (const raw of col.values) {
+    const list = Array.isArray(raw) ? raw : [raw];        // ChoiceList
+    const kept = list.filter(v => v !== null && v !== undefined && String(v).trim() !== '');
+    if (!kept.length) { blank++; continue; }
+    for (const v of kept) {
+      const label = typeof v === 'boolean' ? (v ? 'Oui' : 'Non') : String(v).trim();
+      counts.set(label, (counts.get(label) || 0) + 1);
+    }
+  }
+  // ordre : choix définis dans Grist (s'ils existent), puis ordre alphabétique ; « sans réponse » à la fin
+  const labels = [...counts.keys()];
+  const choices = Array.isArray(col.choices) ? col.choices : [];
+  labels.sort((a, b) => {
+    const ia = choices.indexOf(a), ib = choices.indexOf(b);
+    if (ia >= 0 && ib >= 0) return ia - ib;
+    if (ia >= 0) return -1;
+    if (ib >= 0) return 1;
+    const na = Number(a), nb = Number(b);
+    if (a !== '' && b !== '' && !isNaN(na) && !isNaN(nb)) return na - nb;
+    return a.localeCompare(b, 'fr');
+  });
+  const total = [...counts.values()].reduce((s, n) => s + n, 0) + blank;
+  const slices = labels.map(label => ({ label, count: counts.get(label), pct: counts.get(label) / total * 100, color: colorOf(label) }));
+  if (blank) slices.push({ label: blankLabel, count: blank, pct: blank / total * 100, color: BLANK_COLOR, blank: true });
+  return slices;
+}
+
+function makeColorPicker() {
+  const map = new Map();
+  return label => {
+    if (!map.has(label)) map.set(label, PALETTE[map.size % PALETTE.length]);
+    return map.get(label);
+  };
+}
+
+function buildModel(config, columns, nRows, school) {
+  const used = new Set();
+  const missing = [];
+  const found = [];
+  const colorOf = makeColorPicker();
+  const pages = [];
+  for (const pg of config.pages) {
+    const items = [];
+    for (const it of pg.items) {
+      if (it.type === 'count') { items.push({ kind: 'count', title: it.title, value: nRows }); continue; }
+      const col = findColumn(columns, it, used);
+      if (!col) { missing.push({ page: pg.name, spec: describeSpec(it) }); found.push({ page: pg.name, spec: describeSpec(it), col: null }); continue; }
+      used.add(col.id);
+      found.push({ page: pg.name, spec: describeSpec(it), col });
+      items.push({ kind: 'pie', title: col.label, slices: tally(col, config.blankLabel, colorOf) });
+    }
+    if (items.length) pages.push({ name: pg.name, items });
+  }
+  return { pages, missing, found, used: [...used], respondents: nRows, school: schoolParts(school) };
+}
+
+/* --------------------------------- PDF --------------------------------- */
+const L = { PW: 210, PH: 297, MX: 15, MT: 14, LIMIT: 281, GAP_X: 8, GAP_Y: 7, PAD: 4 };
+const NAVY = [0, 0, 145];
+const INK = [30, 30, 30];
+const GREY = [110, 110, 110];
+
+let SCHOOL = null;   // { l1, l2, l3 }, renseignée par buildPdf
+
+// En-tête : titre / sous-titre / école, puis trait, puis nom de la page Grist
+function drawHeader(doc, name, isCont) {
+  const w = L.PW - 2 * L.MX;
+  let y = L.MT;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(...NAVY);
+  doc.text(pdfSafe(CONFIG.documentTitle), L.MX, y + 5);
+  y += 5 + 2.5;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(...INK);
+  doc.text(pdfSafe(CONFIG.subtitle), L.MX, y + 4);
+  y += 4 + 2.5;
+  if (SCHOOL) {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...GREY);
+    const lines = [];
+    schoolHeaderLines(SCHOOL).forEach(t => lines.push(...doc.splitTextToSize(pdfSafe(t), w)));
+    lines.forEach((l, i) => doc.text(l, L.MX, y + 3.5 + i * 4.1));
+    y += lines.length * 4.1 + 1;
+  }
+  y += 2.5;
+  doc.setDrawColor(...NAVY); doc.setLineWidth(0.6);
+  doc.line(L.MX, y, L.PW - L.MX, y);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...INK);
+  const nameLines = doc.splitTextToSize(pdfSafe(name + (isCont ? ' (suite)' : '')), w);
+  nameLines.forEach((l, i) => doc.text(l, L.MX, y + 7 + i * 5.4));
+  y += 7 + (nameLines.length - 1) * 5.4 + 6;
+  return y;
+}
+
+function drawCover(doc) {
+  const cx = L.PW / 2, w = 160;
+  doc.setFillColor(...NAVY);
+  doc.rect(0, 0, L.PW, 12, 'F');
+  doc.rect(0, L.PH - 12, L.PW, 12, 'F');
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(255, 255, 255);
+  doc.text(pdfSafe(CONFIG.coverFooter), cx, L.PH - 5, { align: 'center' });
+  let y = 100;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(26); doc.setTextColor(...NAVY);
+  const t = doc.splitTextToSize(pdfSafe(CONFIG.documentTitle), w);
+  t.forEach((l, i) => doc.text(l, cx, y + i * 11, { align: 'center' }));
+  y += (t.length - 1) * 11 + 10;
+  doc.setDrawColor(...NAVY); doc.setLineWidth(0.8);
+  doc.line(cx - 25, y, cx + 25, y);
+  y += 14;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(17); doc.setTextColor(...INK);
+  doc.text(pdfSafe(CONFIG.subtitle), cx, y, { align: 'center' });
+  y += 14;
+  if (SCHOOL) {
+    // une ligne par élément : École (UAI) / CP Commune / Circonscription
+    [SCHOOL.l1, SCHOOL.l2, SCHOOL.l3].filter(Boolean).forEach((t, idx) => {
+      doc.setFont('helvetica', idx === 0 ? 'bold' : 'normal');
+      doc.setFontSize(idx === 0 ? 13 : 12);
+      doc.setTextColor(...(idx === 0 ? INK : GREY));
+      const lines = doc.splitTextToSize(pdfSafe(t), w);
+      lines.forEach((l, i) => doc.text(l, cx, y + i * 6, { align: 'center' }));
+      y += lines.length * 6 + 3;
+    });
+  }
+}
+
+function drawSlice(doc, cx, cy, r, a0, a1, color) {
+  doc.setFillColor(...hexToRgb(color));
+  doc.setDrawColor(255, 255, 255);
+  doc.setLineWidth(0.5);
+  const steps = Math.max(2, Math.ceil((a1 - a0) / (Math.PI / 90)));
+  const pts = [[cx, cy]];
+  for (let i = 0; i <= steps; i++) {
+    const a = a0 + (a1 - a0) * i / steps;
+    pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+  }
+  const segs = [];
+  for (let i = 1; i < pts.length; i++) segs.push([pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]]);
+  doc.lines(segs, pts[0][0], pts[0][1], [1, 1], 'FD', true);
+}
+
+function drawPie(doc, cx, cy, r, slices) {
+  if (slices.length === 1) {
+    doc.setFillColor(...hexToRgb(slices[0].color)); doc.setDrawColor(255, 255, 255); doc.setLineWidth(0.5);
+    doc.circle(cx, cy, r, 'FD');
+  } else {
+    let a = -Math.PI / 2;
+    for (const s of slices) {
+      const span = s.pct / 100 * 2 * Math.PI;
+      drawSlice(doc, cx, cy, r, a, a + span, s.color);
+      a += span;
+    }
+  }
+  // pourcentages dans les parts
+  let a = -Math.PI / 2;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9);
+  for (const s of slices) {
+    const span = s.pct / 100 * 2 * Math.PI;
+    const m = slices.length === 1 ? 0 : a + span / 2;
+    if (s.pct >= 12) {                       // grande part : pourcentage à l'intérieur
+      const rr = slices.length === 1 ? 0 : r * 0.62;
+      const [R, G, B] = hexToRgb(s.color);
+      doc.setTextColor(...((0.299 * R + 0.587 * G + 0.114 * B) > 150 ? [30, 30, 30] : [255, 255, 255]));
+      doc.text(pdfSafe(fmtPct(s.pct)), cx + rr * Math.cos(m), cy + rr * Math.sin(m) + 1.2, { align: 'center' });
+    } else {                                 // petite part : pourcentage à l'extérieur
+      doc.setFont('helvetica', 'normal'); doc.setTextColor(...INK);
+      const ro = r + 1.5, ox = cx + ro * Math.cos(m), oy = cy + ro * Math.sin(m);
+      const align = Math.abs(Math.cos(m)) < 0.25 ? 'center' : (Math.cos(m) > 0 ? 'left' : 'right');
+      doc.text(pdfSafe(fmtPct(s.pct)), ox, oy + (Math.sin(m) < -0.5 ? -0.5 : 2.5), { align });
+      doc.setFont('helvetica', 'bold');
+    }
+    a += span;
+  }
+}
+
+// mesure une carte (question) et renvoie sa hauteur + une fonction de dessin
+function measureItem(doc, item, boxW, r) {
+  const innerW = boxW - 2 * L.PAD;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(10);
+  const titleLines = doc.splitTextToSize(pdfSafe(item.title), innerW);
+  const titleH = titleLines.length * 4.6;
+  const drawTitle = (x, y) => {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(...INK);
+    titleLines.forEach((l, i) => doc.text(l, x + L.PAD, y + L.PAD + 3.3 + i * 4.6));
+  };
+  const drawBox = (x, y, h) => {
+    doc.setDrawColor(210, 214, 225); doc.setLineWidth(0.3);
+    doc.roundedRect(x, y, boxW, h, 2, 2, 'S');
+  };
+
+  if (item.kind === 'count') {
+    const h = L.PAD + titleH + 6.5 + 2 * r + L.PAD;
+    return { h, draw(x, y, hh) {
+      drawBox(x, y, hh); drawTitle(x, y);
+      const top = y + L.PAD + titleH + 4;
+      doc.setFillColor(232, 237, 255); doc.roundedRect(x + L.PAD, top, innerW, 2 * r, 2, 2, 'F');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(44); doc.setTextColor(...NAVY);
+      doc.text(String(item.value), x + boxW / 2, top + r + 5.5, { align: 'center' });
+    } };
+  }
+
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+  const vals = item.slices.map(s => pdfSafe(s.count + ' (' + fmtPct(s.pct) + ')'));
+  const valW = Math.max(...vals.map(v => doc.getTextWidth(v)));
+  const labW = innerW - 5.5 - valW - 3;
+  const legend = item.slices.map((s, i) => {
+    const lines = doc.splitTextToSize(pdfSafe(s.label), labW).slice(0, 4);
+    return { s, lines, val: vals[i], h: lines.length * 4.2 + 1.4 };
+  });
+  const legH = legend.reduce((sum, e) => sum + e.h, 0);
+  const h = L.PAD + titleH + 6.5 + 2 * r + 5 + legH + L.PAD - 1.4;
+
+  return { h, draw(x, y, hh) {
+    drawBox(x, y, hh); drawTitle(x, y);
+    const cx = x + boxW / 2, cy = y + L.PAD + titleH + 6.5 + r;
+    drawPie(doc, cx, cy, r, item.slices);
+    let ty = cy + r + 5 + 3;
+    doc.setFontSize(9);
+    for (const e of legend) {
+      doc.setFillColor(...hexToRgb(e.s.color)); doc.rect(x + L.PAD, ty - 2.6, 3, 3, 'F');
+      doc.setFont('helvetica', 'normal'); doc.setTextColor(...INK);
+      e.lines.forEach((l, i) => doc.text(l, x + L.PAD + 5.5, ty + i * 4.2));
+      doc.setTextColor(...GREY);
+      doc.text(e.val, x + boxW - L.PAD, ty, { align: 'right' });
+      ty += e.h;
+    }
+  } };
+}
+
+function renderPage(doc, page, first) {
+  if (!first) doc.addPage();
+  let y = drawHeader(doc, page.name, false);
+  const contentTop = y;
+  const boxW = (L.PW - 2 * L.MX - L.GAP_X) / 2;
+
+  const rowsFor = r => {
+    const rows = [];
+    for (let i = 0; i < page.items.length; i += 2) {
+      const cells = page.items.slice(i, i + 2).map(it => measureItem(doc, it, boxW, r));
+      rows.push({ cells, h: Math.max(...cells.map(c => c.h)) });
+    }
+    return rows;
+  };
+
+  // on réduit les camemberts si nécessaire pour tenir sur UNE page PDF
+  let rows = null;
+  for (const r of [24, 22, 20, 18, 16]) {
+    const cand = rowsFor(r);
+    const total = cand.reduce((s, x) => s + x.h, 0) + L.GAP_Y * (cand.length - 1);
+    if (y + total <= L.LIMIT) { rows = cand; break; }
+  }
+  if (!rows) rows = rowsFor(20);   // sinon : la page Grist sera répartie sur plusieurs pages PDF
+
+  for (const row of rows) {
+    if (y + row.h > L.LIMIT && y > contentTop) {
+      doc.addPage();
+      y = drawHeader(doc, page.name, true);
+    }
+    row.cells.forEach((c, i) => {
+      const x = row.cells.length === 1 ? (L.PW - boxW) / 2 : L.MX + i * (boxW + L.GAP_X);
+      c.draw(x, y, row.h);
+    });
+    y += row.h + L.GAP_Y;
+  }
+}
+
+function buildPdf(jsPDF, model) {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
+  doc.setProperties({ title: pdfSafe(CONFIG.documentTitle), subject: pdfSafe(CONFIG.footerLabel) });
+  SCHOOL = model.school || null;
+  drawCover(doc);                                   // page 1 : couverture
+  model.pages.forEach(p => renderPage(doc, p, false));
+  const total = doc.getNumberOfPages();
+  for (let p = 2; p <= total; p++) {                // pas de pied de page sur la couverture
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...GREY);
+    doc.text(pdfSafe(CONFIG.footerLabel + ' - ' + model.respondents + ' réponse' + (model.respondents > 1 ? 's' : '')), L.MX, 290);
+    doc.text('Page ' + p + ' / ' + total, L.PW - L.MX, 290, { align: 'right' });
+  }
+  return doc;
+}
+</script>
+
+<!-- ===================================================================
+     INTERFACE + lecture des données Grist
+     =================================================================== -->
+<script>
+const $ = id => document.getElementById(id);
+const JSPDF_URLS = [
+  'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js',
+  'https://unpkg.com/jspdf@2.5.2/dist/jspdf.umd.min.js',
+  './jspdf.umd.min.js'            // copie locale éventuelle, à côté de index.html
+];
+let model = null;
+
+function setStatus(msg, kind) { const s = $('status'); s.textContent = msg; s.className = kind || ''; }
+
+function loadScript(url) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = url; s.onload = resolve; s.onerror = () => reject(new Error(url));
+    document.head.appendChild(s);
+  });
+}
+async function ensureJsPdf() {
+  if (window.jspdf && window.jspdf.jsPDF) return window.jspdf.jsPDF;
+  for (const url of JSPDF_URLS) {
+    try { await loadScript(url); if (window.jspdf && window.jspdf.jsPDF) return window.jspdf.jsPDF; } catch (e) { /* suivant */ }
+  }
+  throw new Error('Impossible de charger la bibliothèque jsPDF (réseau bloqué ?).');
+}
+
+// Libellés et choix des colonnes via l'API REST (jeton lecture seule fourni par Grist)
+async function fetchColumnMeta(tableId) {
+  try {
+    const tok = await grist.docApi.getAccessToken({ readOnly: true });
+    const resp = await fetch(tok.baseUrl + '/tables/' + encodeURIComponent(tableId) + '/columns?hidden=true&auth=' + encodeURIComponent(tok.token));
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const json = await resp.json();
+    const meta = {};
+    for (const c of json.columns) {
+      let choices = null;
+      try { choices = JSON.parse(c.fields.widgetOptions || '{}').choices || null; } catch (e) { /* ignore */ }
+      meta[c.id] = { label: c.fields.label, choices };
+    }
+    return meta;
+  } catch (e) {
+    console.warn('Libellés des colonnes indisponibles :', e);
+    return null;
+  }
+}
+
+function toColumns(data) {
+  if (!Array.isArray(data)) return data;                 // déjà au format colonnes
+  const cols = {};
+  for (const row of data) for (const k of Object.keys(row)) (cols[k] = cols[k] || []).push(row[k]);
+  return cols;
+}
+
+// Informations de l'école : première ligne renseignée de la table « INFORMATIONS SUR L'ÉCOLE »
+async function fetchSchool() {
+  const cfg = CONFIG.school;
+  try {
+    const tables = await grist.docApi.listTables();
+    const tid = tables.find(t => cfg.table && t === cfg.table) || tables.find(t => norm(t).startsWith('informations sur l'));
+    if (!tid) return { info: null, problem: 'table « INFORMATIONS SUR L\'ÉCOLE » introuvable (tables du document : ' + tables.join(', ') + ').' };
+    const data = toColumns(await grist.docApi.fetchTable(tid));
+    const keyOf = name => Object.keys(data).find(k => k === name) || Object.keys(data).find(k => norm(k) === norm(name));
+    const keys = {}, absent = [];
+    for (const f of Object.keys(cfg.fields)) {
+      keys[f] = keyOf(cfg.fields[f]);
+      if (!keys[f]) absent.push(cfg.fields[f]);
+    }
+    const nRows = (data.id || []).length;
+    if (!nRows) return { info: null, problem: 'la table « ' + tid + ' » est vide.' };
+    let row = keys.nom ? data[keys.nom].findIndex(v => v != null && String(v).trim() !== '') : 0;
+    if (row < 0) row = 0;
+    const info = {};
+    for (const f of Object.keys(cfg.fields)) info[f] = keys[f] ? data[keys[f]][row] : '';
+    return { info, problem: absent.length ? 'colonnes introuvables dans « ' + tid + ' » : ' + absent.join(', ') + '.' : '' };
+  } catch (e) {
+    console.warn('Informations école indisponibles :', e);
+    return { info: null, problem: (e && e.message ? e.message : e) };
+  }
+}
+
+async function refresh() {
+  try {
+    const tableId = await (grist.selectedTable && grist.selectedTable.getTableId
+      ? grist.selectedTable.getTableId() : grist.getTable().getTableId());
+    const data = toColumns(await grist.fetchSelectedTable({ includeColumns: 'all' }));
+    const nRows = (data.id || []).length;
+    const meta = await fetchColumnMeta(tableId);
+    const columns = Object.keys(data)
+      .filter(k => k !== 'id' && k !== 'manualSort' && !k.startsWith('gristHelper_'))
+      .map(id => ({
+        id,
+        label: (meta && meta[id] && meta[id].label) || id.replace(/_/g, ' '),
+        choices: meta && meta[id] ? meta[id].choices : null,
+        values: data[id]
+      }));
+    const school = await fetchSchool();
+    model = buildModel(CONFIG, columns, nRows, school.info);
+    // colonnes « 1.2.3 … » présentes dans la table mais absentes du PDF
+    model.unused = columns.filter(c => !model.used.includes(c.id) && /^\s*\d+(\.\d+)+/.test(c.label));
+    renderDiagnostic(columns, tableId);
+    $('schoolInfo').textContent = model.school ? 'École :\n' + schoolHeaderLines(model.school).join('\n') : '';
+
+    const nQ = model.found.filter(f => f.col).length;
+    const nTot = model.found.length;
+    const schoolNote = (school.problem ? ' Attention, ligne « école » : ' + school.problem : '')
+      + (model.unused.length ? ' Attention : ' + model.unused.length + ' colonne(s) numérotée(s) de la table ne figurent dans aucune page du PDF (voir le diagnostic).' : '');
+    if (!nRows) setStatus('La table « ' + tableId + ' » ne contient aucune réponse.', 'warn');
+    else if (model.missing.length) setStatus(nQ + ' questions sur ' + nTot + ' retrouvées dans « ' + tableId + ' » (' + nRows + ' réponses). Voir le diagnostic ci-dessous : les questions manquantes ne seront pas dans le PDF.' + schoolNote, 'warn');
+    else setStatus('Prêt : ' + nQ + ' questions, ' + nRows + ' réponses (table « ' + tableId + ' »).' + (meta ? '' : ' Libellés lus depuis les identifiants de colonnes.') + schoolNote, (school.problem || model.unused.length) ? 'warn' : 'ok');
+    $('btn').disabled = !(nRows && model.pages.length);
+    if (model.missing.length) $('diag').open = true;
+  } catch (e) {
+    console.error(e);
+    $('btn').disabled = true;
+    setStatus('Erreur : ' + (e && e.message ? e.message : e) + ' — vérifiez que le widget est lié à la table des réponses et qu\'il a l\'accès « Accès complet au document ».', 'err');
+  }
+}
+
+function renderDiagnostic(columns, tableId) {
+  const body = $('diagBody');
+  body.textContent = '';
+  const table = document.createElement('table');
+  table.innerHTML = '<tr><th>Page Grist</th><th>Question attendue</th><th>Colonne trouvée</th></tr>';
+  for (const f of model.found) {
+    const tr = document.createElement('tr');
+    const td = txt => { const c = document.createElement('td'); c.textContent = txt; tr.appendChild(c); return c; };
+    td(f.page); td(f.spec);
+    const c3 = td(f.col ? f.col.label + '  [' + f.col.id + ']' : 'NON TROUVÉE');
+    c3.className = f.col ? 'ok' : 'ko';
+    table.appendChild(tr);
+  }
+  body.appendChild(table);
+  if (model.unused && model.unused.length) {
+    const pu = document.createElement('p');
+    pu.style.color = '#7a4d00';
+    pu.textContent = 'Colonnes numérotées de la table non reprises dans le PDF : ' + model.unused.map(c => c.label + ' [' + c.id + ']').join(' ; ');
+    body.appendChild(pu);
+    $('diag').open = true;
+  }
+  if (model.missing.length) {
+    const p = document.createElement('p');
+    p.innerHTML = 'Colonnes de la table « <b></b> » : ';
+    p.querySelector('b').textContent = tableId;
+    const code = document.createElement('code');
+    code.textContent = columns.map(c => c.id).join(', ');
+    p.appendChild(code);
+    const p2 = document.createElement('p');
+    p2.innerHTML = 'Pour une question non trouvée, ajoutez <code>col:\'IdentifiantDeLaColonne\'</code> dans <code>CONFIG</code> (haut du fichier professeurs.html).';
+    body.appendChild(p); body.appendChild(p2);
+  }
+}
+
+async function generate() {
+  const btn = $('btn');
+  btn.disabled = true; $('dl').style.display = 'none';
+  try {
+    setStatus('Lecture des données…');
+    await refresh();
+    if (!model || !model.pages.length) return;
+    btn.disabled = true;
+    setStatus('Génération du PDF…');
+    const jsPDF = await ensureJsPdf();
+    const doc = buildPdf(jsPDF, model);
+    const blob = doc.output('blob');
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = CONFIG.fileName;
+    document.body.appendChild(a); a.click(); a.remove();
+    $('dlLink').href = url; $('dl').style.display = 'block';
+    setStatus('PDF généré : ' + doc.getNumberOfPages() + ' pages, ' + model.respondents + ' réponses.', 'ok');
+  } catch (e) {
+    console.error(e);
+    setStatus('Erreur : ' + (e && e.message ? e.message : e), 'err');
+  } finally {
+    btn.disabled = !(model && model.pages.length);
+  }
+}
+
+grist.ready({ requiredAccess: 'full' });
+$('btn').addEventListener('click', generate);
+let timer = null;
+grist.onRecords(() => { clearTimeout(timer); timer = setTimeout(refresh, 500); }, { includeColumns: 'all' });
+</script>
+</body>
+</html>
